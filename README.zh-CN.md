@@ -59,6 +59,18 @@ dsh plugin --profile web add ./opencode2dsh-dsh-plugin-<version>.tgz
 
 **验证**：重启 `dsh web`，打开模型选择器，在 **opencode2dsh** 分组里选模型即可。
 
+**桌面端（`desktop` profile）**：`dsh plugin --profile desktop add ...` 会被启动器拒绝
+（`profile "desktop" is managed exclusively by the Electron application`），
+而手工 `pnpm add` 又不会把包加进 `dsh.profile.bundles`。仓库里的脚本把这两步做全：
+
+```sh
+node scripts/install-dsh-profile.mjs --profile desktop
+node scripts/verify-dsh-install.mjs --profile desktop
+```
+
+已装好的包也能直接装：`--version 0.3.14`；只预览不改动：`--dry-run`。
+细节与实测记录见 [docs/install-dsh-0.2.x.md](docs/install-dsh-0.2.x.md)。
+
 需要 DSH（DeepSeek Harness）0.1.7 及以上、带 web profile（IP 池设置页依赖 0.1.7
 的插件页契约）；Node.js ≥ 20（DSH 能跑就满足）；出站 HTTPS 需可达 `opencode.ai` 与 `models.dev`。
 

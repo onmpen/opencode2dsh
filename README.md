@@ -62,6 +62,19 @@ dsh plugin --profile web add ./opencode2dsh-dsh-plugin-<version>.tgz
 **Verify**: restart `dsh web`, open the model picker, and pick a model from
 the **opencode2dsh** group.
 
+**Desktop (`desktop` profile)**: `dsh plugin --profile desktop add ...` is refused
+by the launcher (`profile "desktop" is managed exclusively by the Electron
+application`), and a manual `pnpm add` does not add the package to
+`dsh.profile.bundles`. The scripts in this repository do both steps:
+
+```sh
+node scripts/install-dsh-profile.mjs --profile desktop
+node scripts/verify-dsh-install.mjs --profile desktop
+```
+
+Install a specific release with `--version 0.3.14`, or preview with `--dry-run`.
+Details and the measured record: [docs/install-dsh-0.2.x.md](docs/install-dsh-0.2.x.md).
+
 Requires DSH (DeepSeek Harness) 0.1.7 or newer with a web profile (the IP 池
 settings page rides the 0.1.7 Plugins page contract); Node.js ≥ 20 (already
 present if DSH runs); outbound HTTPS to `opencode.ai` and `models.dev`.
