@@ -23,8 +23,12 @@
  * Usage:
  *   node scripts/install-dsh-profile.mjs --profile desktop
  *   node scripts/install-dsh-profile.mjs --profile web --version 0.3.14
+ *   node scripts/install-dsh-profile.mjs --profile desktop --spec ./opencode2dsh-dsh-plugin-0.3.14.tgz
  *   node scripts/install-dsh-profile.mjs --profile desktop --dry-run
  *   node scripts/install-dsh-profile.mjs --profile desktop --pnpm /path/to/pnpm.cjs
+ *
+ * `--spec` takes anything pnpm accepts (a tarball, a directory, a git ref), so a
+ * local build of this repository installs without being published first.
  */
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -37,7 +41,15 @@ const DEFAULT_VERSION = '0.3.14'
 const ALLOW_BUILDS = { '@google/genai': false, protobufjs: false }
 
 function parseArgs(argv) {
-  const out = { profile: 'desktop', version: DEFAULT_VERSION, pkg: PKG, pnpm: undefined, dryRun: false, help: false }
+  const out = {
+    profile: 'desktop',
+    version: DEFAULT_VERSION,
+    pkg: PKG,
+    spec: undefined,
+    pnpm: undefined,
+    dryRun: false,
+    help: false,
+  }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     const next = () => {
@@ -49,11 +61,16 @@ function parseArgs(argv) {
     if (arg === '--profile') out.profile = next()
     else if (arg === '--version') out.version = next()
     else if (arg === '--package') out.pkg = next()
+    else if (arg === '--spec') out.spec = next()
     else if (arg === '--pnpm') out.pnpm = next()
     else if (arg === '--dry-run') out.dryRun = true
     else if (arg === '-h' || arg === '--help') out.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
+  // A bare version means the registry package; anything else (a tarball, a
+  // directory, a git ref) is passed to pnpm verbatim, so a local build of this
+  // repository can be installed without publishing it first.
+  out.spec = out.spec ?? `${out.pkg}@${out.version}`
   return out
 }
 
@@ -165,11 +182,11 @@ async function main() {
 
   const pnpm = locatePnpm(options.pnpm)
   console.log(`profile:  ${profileDir}`)
-  console.log(`package:  ${options.pkg}@${options.version}`)
+  console.log(`package:  ${options.spec}`)
   console.log(`pnpm:     ${describePnpm(pnpm)}`)
 
   const manifest = readJson(manifestPath)
-  manifest.dependencies = { ...(manifest.dependencies ?? {}), [options.pkg]: options.version }
+  manifest.dependencies = { ...(manifest.dependencies ?? {}), [options.pkg]: options.spec }
   const bundles = manifest.dsh?.profile?.bundles ?? []
   if (!bundles.includes(options.pkg)) {
     manifest.dsh = { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles: [...bundles, options.pkg] } }
@@ -190,7 +207,7 @@ async function main() {
   writeJson(manifestPath, manifest)
   if (workspace.changed) writeFileSync(workspacePath, workspace.text, 'utf8')
 
-  const args = ['add', `${options.pkg}@${options.version}`]
+  const args = ['add', options.spec]
   const invoke = (extra = []) =>
     pnpm.kind === 'script'
       ? run({ command: pnpm.node, args: [pnpm.script, ...args, ...extra], cwd: profileDir })

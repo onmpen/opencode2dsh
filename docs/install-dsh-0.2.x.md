@@ -64,6 +64,16 @@ ships. Useful flags: `--version`, `--pnpm <path>`, `--dry-run`.
 
 Restart DeepSeek Harness afterwards: a newly added bundle is not hot-loaded.
 
+To install a build of this repository instead of the published release, pack it
+and point the installer at the tarball — a tarball spec is never published
+first:
+
+```sh
+cd packages/plugin && pnpm install && pnpm pack
+cd ../.. && node scripts/install-dsh-profile.mjs --profile desktop \
+  --spec ./packages/plugin/opencode2dsh-dsh-plugin-<version>.tgz
+```
+
 ## Why 0.3.14 and not earlier
 
 "Does not support the latest DSH" refers to **0.3.13 and earlier**:
