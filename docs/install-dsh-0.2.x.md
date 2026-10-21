@@ -60,9 +60,24 @@ node scripts/verify-dsh-install.mjs --profile desktop
 
 Both are dependency-free and Node ≥ 20. pnpm is taken from `PATH` when present,
 otherwise from the copy the DeepSeek Harness installation or the dsh runtime
-ships. Useful flags: `--version`, `--pnpm <path>`, `--dry-run`.
+ships. Useful flags: `--version`, `--spec <pnpm spec>`, `--pnpm <path>`,
+`--dry-run`.
 
 Restart DeepSeek Harness afterwards: a newly added bundle is not hot-loaded.
+
+The verifier reports three states. `pending` means the item can only be answered
+after the host boots this profile — the health snapshot is written once per boot
+at a global path, so a profile that has never booted can only be told apart from
+one that has by comparing the snapshot's `writtenAt` against the profile's own
+lockfile. `pending` is not a failure and the exit code stays 0:
+
+```
+[ok]   dependency declared  0.3.14
+...
+[--]   catalog ready        snapshot predates this install (...); boot this profile and re-run
+
+6/6 checks passed, 1 pending
+```
 
 To install a build of this repository instead of the published release, pack it
 and point the installer at the tarball — a tarball spec is never published

@@ -9,7 +9,7 @@
  *   node scripts/verify-dsh-install.mjs --profile desktop
  *   node scripts/verify-dsh-install.mjs --profile web --package @opencode2dsh/dsh-plugin
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -44,18 +44,24 @@ if (!existsSync(manifestPath)) {
 }
 const manifest = readJson(manifestPath)
 const rows = []
-const check = (ok, label, detail) => rows.push({ ok, label, detail })
+/**
+ * Record one check. `pending` is a third state, not a failure: the item can only
+ * be answered after the host boots this profile, and treating "not booted yet"
+ * as a failure would make a fresh install look broken.
+ */
+const check = (state, label, detail) => rows.push({ state, label, detail })
+const ok = (condition, label, detail) => check(condition ? 'ok' : 'fail', label, detail)
 
 const declared = manifest.dependencies?.[pkg]
-check(Boolean(declared), 'dependency declared', declared ?? 'absent from dependencies')
+ok(Boolean(declared), 'dependency declared', declared ?? 'absent from dependencies')
 
 const bundles = manifest.dsh?.profile?.bundles ?? []
-check(bundles.includes(pkg), 'bundle selected', bundles.join(', '))
+ok(bundles.includes(pkg), 'bundle selected', bundles.join(', '))
 
 const pkgDir = join(profileDir, 'node_modules', ...pkg.split('/'))
 const pkgJsonPath = join(pkgDir, 'package.json')
 const installed = existsSync(pkgJsonPath) ? readJson(pkgJsonPath) : undefined
-check(Boolean(installed), 'package installed', installed ? installed.version : 'not installed')
+ok(Boolean(installed), 'package installed', installed ? installed.version : 'not installed')
 
 for (const [label, relative] of [
   ['host entry present', join('lib', 'index.js')],
@@ -63,22 +69,50 @@ for (const [label, relative] of [
   ['bundle patch present', 'cordis.patch.yml'],
 ]) {
   const present = existsSync(join(pkgDir, relative))
-  check(present, label, present ? relative : `missing ${relative}`)
+  ok(present, label, present ? relative : `missing ${relative}`)
 }
+
+/**
+ * The plugin writes one health snapshot per boot at a global path, so any
+ * profile that has booted can leave one behind. Only a snapshot taken after this
+ * profile last installed the plugin describes this install.
+ *
+ * The anchor is the profile's own lockfile, not the installed package's mtime:
+ * pnpm hard-links from its content-addressable store, so the files under
+ * node_modules keep the store's timestamps and can look older than a snapshot
+ * written days later.
+ */
+const installAnchor = [
+  join(profileDir, 'pnpm-lock.yaml'),
+  join(profileDir, 'node_modules', '.modules.yaml'),
+]
+  .filter((path) => existsSync(path))
+  .reduce((latest, path) => Math.max(latest, statSync(path).mtimeMs), 0)
 
 const statusPath = join(homedir(), '.opencode2dsh', 'adapter-status.json')
-if (existsSync(statusPath)) {
-  const status = readJson(statusPath)
-  check(
-    status.status === 'ready',
-    'catalog ready',
-    `status=${status.status} exposed=${status.exposed}/${status.total} error=${status.lastError || 'none'}`,
-  )
+if (!existsSync(statusPath)) {
+  check('pending', 'catalog ready', `no snapshot yet at ${statusPath}; boot this profile once`)
 } else {
-  check(false, 'catalog ready', `no snapshot at ${statusPath} yet (written once the host boots the plugin)`)
+  const status = readJson(statusPath)
+  const writtenAt = Date.parse(status.writtenAt ?? '')
+  const summary = `status=${status.status} exposed=${status.exposed}/${status.total} error=${status.lastError || 'none'}`
+  if (Number.isFinite(writtenAt) && writtenAt < installAnchor) {
+    check(
+      'pending',
+      'catalog ready',
+      `snapshot predates this install (${new Date(writtenAt).toLocaleString()}); boot this profile and re-run`,
+    )
+  } else {
+    ok(status.status === 'ready', 'catalog ready', summary)
+  }
 }
 
-for (const row of rows) console.log(`${row.ok ? '[ok]  ' : '[!!]  '} ${row.label.padEnd(20)} ${row.detail}`)
-const failed = rows.filter((row) => !row.ok).length
-console.log(`\n${rows.length - failed}/${rows.length} checks passed`)
+const marks = { ok: '[ok]  ', fail: '[!!]  ', pending: '[--]  ' }
+for (const row of rows) console.log(`${marks[row.state]} ${row.label.padEnd(20)} ${row.detail}`)
+
+const failed = rows.filter((row) => row.state === 'fail').length
+const passed = rows.filter((row) => row.state === 'ok').length
+const pending = rows.filter((row) => row.state === 'pending').length
+const tail = pending > 0 ? `, ${pending} pending` : ''
+console.log(`\n${passed}/${rows.length - pending} checks passed${tail}`)
 process.exit(failed === 0 ? 0 : 1)
