@@ -554,9 +554,31 @@ test('the deepseek-v4.1 free lane advertises a serving cap below its verified ce
   // 1048576 after a 2026-10-16 needle probe recalled at 1,011,668 prompt
   // tokens. The 2026-10-20 re-probe of the same lane only recalls at 315,596
   // prompt tokens, and a ~326k-token prompt is refused with
-  // context_length_exceeded. The override now speaks 300000 so DSH's 0.8x
-  // compaction threshold (240k) fires below the real ceiling; maxOutput and
-  // every other declared field stay untouched.
+  // context_length_exceeded.
+  //
+  // 300000 was still too high (2026-10-22). dsh-compaction-basic does not
+  // compact at 0.8 x window alone; it takes
+  //   min(0.8 x window, window - reservedCompletion - headroom)
+  // with headroomTokens 65536 and the model's own 32000 maxTokens reserved for
+  // output, so 300000 resolved to 202464. A wire prompt runs a few thousand
+  // tokens above the host's estimate (system prompt plus the ~30 KB tool
+  // schema), so the first turn past that sent ~207k and came back
+  // 400 context_length_exceeded -- and the compaction request that tried to
+  // recover carried the same history and was refused the same way.
+  //
+  // 262144 resolves to min(209715, 164608) = 164608: margin below the lowest
+  // refusal measured on this lane (~181.7k), and still >160k usable.
+  const DSH_THRESHOLD_RATIO = 0.8
+  const DSH_HEADROOM_TOKENS = 65536
+  /** Token count at which DSH compacts, for one declared window and output budget. */
+  const dshCompactionThreshold = (contextWindow: number, maxOutput: number): number =>
+    Math.floor(
+      Math.min(
+        contextWindow * DSH_THRESHOLD_RATIO,
+        contextWindow - maxOutput - DSH_HEADROOM_TOKENS,
+      ),
+    )
+
   const catalog = new ModelCatalog({
     fetchImpl: fakeFetch({
       [ZEN_MODELS_URL]: { data: [{ id: 'deepseek-v4.1-flash-free' }] },
@@ -575,10 +597,16 @@ test('the deepseek-v4.1 free lane advertises a serving cap below its verified ce
   })
   try {
     await catalog.refreshOnce()
-    assert.deepEqual(catalog.limits('deepseek-v4.1-flash-free'), { contextWindow: 300000, maxOutput: 32000 })
-    // DSH compacts at 0.8x the declared window; at 300k that is 240k, and
-    // 240k + the 32k output budget stays below the 315,596-token recall point.
-    assert.ok((catalog.limits('deepseek-v4.1-flash-free')?.contextWindow ?? 0) * 0.8 + 32000 < 315596)
+    assert.deepEqual(catalog.limits('deepseek-v4.1-flash-free'), { contextWindow: 262144, maxOutput: 32000 })
+    // The declared window must put DSH's real compaction point below the
+    // lowest ceiling this lane has refused at (~181.7k), not merely below the
+    // best one it has recalled at (315,596).
+    const window = catalog.limits('deepseek-v4.1-flash-free')?.contextWindow ?? 0
+    const output = catalog.limits('deepseek-v4.1-flash-free')?.maxOutput ?? 0
+    assert.equal(dshCompactionThreshold(window, output), 164608)
+    assert.ok(dshCompactionThreshold(window, output) < 181_700)
+    // ...while still leaving real working room, so the cap is not a fig leaf.
+    assert.ok(dshCompactionThreshold(window, output) > 160_000)
     // the override only touches `contextWindow`; nothing else is invented
     assert.deepEqual(catalog.modalities('deepseek-v4.1-flash-free'), ['text'])
     assert.equal(catalog.decision('deepseek-v4.1-flash-free').allowed, true)

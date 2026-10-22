@@ -96,8 +96,70 @@ cd ../.. && node scripts/install-dsh-profile.mjs --profile desktop \
 | Issue | Symptom on 0.2.x | Fixed in |
 | --- | --- | --- |
 | #96 / #98 | `The 'reasoning_content' in the thinking mode must be passed back to the API` on the second step of a tool call | 0.3.14 |
-| #99 | a session near 200k failed instead of compacting | 0.3.14 |
+| #99 | a session near 200k failed instead of compacting | 0.3.14, and again in `0.3.15-fork.1` (below) |
 | #103 | truncated streams classified `UPSTREAM`, so the `TRANSPORT` retry policy never ran | 0.3.14 |
+
+## The context ceiling, and why 0.3.14's 300k was still too high
+
+`400 {"message":"Your request resulted in more tokens than this model's maximum
+context length allows…","code":"context_length_exceeded"}` on
+`deepseek-v4.1-flash-free` is not a network fault. The plugin advertises a
+context window, and DSH compacts before the history reaches it — but the
+advertised number has to account for how DSH actually computes that point:
+
+```
+messageBudget   = contextWindow - reservedCompletionTokens      # the model's maxTokens
+pressureBudget  = messageBudget - headroomTokens                # headroomTokens default 65536
+thresholdTokens = min(thresholdRatio × contextWindow, pressureBudget)   # thresholdRatio 0.8
+```
+
+With 0.3.14's 300000 and this model's 32000 output budget:
+
+```
+min(0.8 × 300000, 300000 − 32000 − 65536) = min(240000, 202464) = 202464
+```
+
+So compaction only fired at ~202k, while a wire prompt runs a few thousand
+tokens above the host's estimate (system prompt plus the ~30 KB tool schema).
+The first turn past that sent ~207k and was refused; worse, the compaction that
+tried to recover carried the same history, was refused identically, and left the
+session stuck — every later turn replayed the same failing request.
+
+The lane's own ceiling also drifts: 0.3.14 was released against a 315,596-token
+recall probe, but its notes already record a refusal at ~181.7k, and the
+2026-10-22 failure above is consistent with the ceiling sitting near that lower
+figure rather than at 300k.
+
+`0.3.15-fork.1` declares **262144** for this model, which resolves to:
+
+```
+min(0.8 × 262144, 262144 − 32000 − 65536) = min(209715, 164608) = 164608
+```
+
+That leaves ~17k of margin below the lowest refusal measured on the lane while
+keeping >160k of usable context. `mimo-v2.6-flash-free` stays at 1048576: its
+window is verified on this lane, so it is not the same class of risk.
+
+If you would rather not change the plugin, the same effect is reachable from the
+DSH side in the profile's `cordis.patch.yml` (`thresholdRatio` applies to the
+routed target only):
+
+```yaml
+- id: compaction-basic
+  name: "@deepseek-ai/dsh-compaction-basic"
+  config:
+    modelPolicies:
+      - provider: opencode2dsh
+        model: deepseek-v4.1-flash-free
+        thresholdRatio: 0.55   # 0.55 × 300000 ≈ 165000, matching the fork build
+```
+
+`retainRatio` must stay below `thresholdRatio`, or the host refuses to start.
+
+A session already stuck on this error cannot be rescued by a smaller window: its
+history is larger than the ceiling, so both the normal request and the
+compaction request fail. Switch that session to a model with a verified larger
+window (`mimo-v2.6-flash-free`), run compaction there, then switch back.
 
 ## Measured on 0.2.1-rc.2
 

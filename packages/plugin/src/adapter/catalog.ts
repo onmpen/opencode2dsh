@@ -151,14 +151,28 @@ export function decide(model: string, prices: Map<string, ModelPrice>, ready: bo
  *   `context_length_exceeded`; the free lane no longer serves 1M. Declaring
  *   1M is also actively harmful: DSH compacts at 0.8 × contextWindow (=800k),
  *   so a long session grows past the real ceiling without ever compacting and
- *   then fails with a hard upstream error (#99). 300000 is the conservative
- *   serving value: DSH compacts at 240k, and a 240k prompt plus the model's
- *   32k output budget is 272k, still below the verified 315,596-token recall
- *   point; it also keeps >200k usable.
+ *   then fails with a hard upstream error (#99).
+ *
+ * 262144 (the same conservative value {@link DEFAULT_CONTEXT_WINDOW} falls back
+ * to) replaces the earlier 300000. 300000 assumed DSH compacts at
+ * `0.8 × contextWindow` = 240k, but that is not the whole rule: `dsh-compaction-basic`
+ * takes `min(thresholdRatio × contextWindow, contextWindow − reservedCompletionTokens
+ * − headroomTokens)` with `thresholdRatio` 0.8, `headroomTokens` 65536 and the
+ * model's own `maxTokens` (32000 here) reserved for output. For 300000 that
+ * resolves to `min(240000, 202464)` = **202464**, and a wire prompt runs a few
+ * thousand tokens above the host's estimate (system prompt plus the ~30 KB
+ * tool schema), so the first turn past ~202k estimated sent ~207k and came back
+ * `400 context_length_exceeded` (measured 2026-10-22, and the compaction request
+ * that tried to recover was refused the same way, leaving the session stuck).
+ * At 262144 the same rule resolves to `min(209715, 164608)` = **164608**, which
+ * keeps ~17k of margin below the lowest refusal measured on this lane so far
+ * (~181.7k) while still exposing >160k of usable context. Raising this number
+ * again requires re-measuring the lane, not re-reading models.dev: the ceiling
+ * moves with egress and time.
  */
 const LOCAL_MODEL_OVERRIDES: Readonly<Record<string, Partial<ModelPrice>>> = {
   'mimo-v2.6-flash-free': { contextWindow: 1048576 },
-  'deepseek-v4.1-flash-free': { contextWindow: 300000 },
+  'deepseek-v4.1-flash-free': { contextWindow: 262144 },
 }
 
 /** Shallow per-field override: declared fields win, the rest pass through. */
